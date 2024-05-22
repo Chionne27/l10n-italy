@@ -448,6 +448,9 @@ class WizardAccountMoveManageAsset(models.TransientModel):
             residual = dep.amount_residual
             dep_vals = {"line_ids": []}
             dep_writeoff = writeoff
+            base_coeff = dep.base_coeff
+            if base_coeff:
+                dep_writeoff *= base_coeff
 
             if self.dismiss_asset_without_sale and not self.move_line_ids:
                 asset_accounting_info_ids = [
@@ -559,7 +562,18 @@ class WizardAccountMoveManageAsset(models.TransientModel):
             else:
                 dep_writeoff = writeoff
 
-            name = _("Partial dismissal from move(s) {}").format(move_nums)
+            dep_fund_amount = fund_amt
+            dep_purchase_amt = purchase_amt
+            base_coeff = dep.base_coeff
+            if base_coeff:
+                dep_fund_amount *= base_coeff
+                dep_purchase_amt *= base_coeff
+                dep_writeoff *= base_coeff
+
+            name = _(
+                "Partial dismissal from move(s) %(move_nums)s",
+                move_nums=move_nums,
+            )
 
             out_line_vals = {
                 "asset_accounting_info_ids": [
@@ -573,7 +587,7 @@ class WizardAccountMoveManageAsset(models.TransientModel):
                     )
                     for line in self.move_line_ids
                 ],
-                "amount": purchase_amt,
+                "amount": dep_purchase_amt,
                 "date": dismiss_date,
                 "move_type": "out",
                 "name": name,
@@ -591,7 +605,7 @@ class WizardAccountMoveManageAsset(models.TransientModel):
                     )
                     for line in self.move_line_ids
                 ],
-                "amount": -fund_amt,
+                "amount": -dep_fund_amount,
                 "date": dismiss_date,
                 "move_type": "depreciated",
                 "name": name,
@@ -600,7 +614,7 @@ class WizardAccountMoveManageAsset(models.TransientModel):
 
             dep_vals = {"line_ids": [(0, 0, out_line_vals), (0, 0, dep_line_vals)]}
 
-            balance = (fund_amt + dep_writeoff) - purchase_amt
+            balance = (dep_fund_amount + dep_writeoff) - dep_purchase_amt
             if not float_is_zero(balance, digits):
                 loss_gain_vals = {
                     "asset_accounting_info_ids": [
@@ -666,6 +680,10 @@ class WizardAccountMoveManageAsset(models.TransientModel):
                         )
                         for line in lines
                     )
+                base_coeff = dep.base_coeff
+                if base_coeff:
+                    amount *= base_coeff
+
                 sign = 1 if float_compare(amount, 0, digits) > 0 else -1
                 # Block updates if the amount to be written off is higher than
                 # the residual amount
