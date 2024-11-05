@@ -29,11 +29,21 @@ class ResPartner(models.Model):
     # 1.1.4
     codice_destinatario = fields.Char(
         "Addressee Code",
+        compute="_compute_codice_destinatario",
+        inverse="_inverse_codice_destinatario",
+        store=True,
         help="The code, 7 characters long, assigned by ES to subjects with an "
         "accredited channel; if the addressee didn't accredit a channel "
         "to ES and invoices are received by PEC, the field must be "
         "the standard value ('%s')." % STANDARD_ADDRESSEE_CODE,
         default=STANDARD_ADDRESSEE_CODE,
+    )
+    l10n_it_use_codice_destinatario_for_children = fields.Boolean(
+        string="Use addressee code for child contacts",
+        store=True,
+        default=False,
+        help="Instead of using the deafult 0000000 code"
+        " uses for the childs the one set in the parent",
     )
     # 1.1.6
     pec_destinatario = fields.Char(
@@ -54,7 +64,7 @@ class ResPartner(models.Model):
     )
 
     electronic_invoice_use_this_address = fields.Boolean(
-        "Use this e-invoicing data when invoicing to this address",
+        "Use different e-invoicing data when invoicing to this address",
         help="Set this when the main company has got several Addressee Codes or PEC",
     )
 
@@ -168,12 +178,67 @@ class ResPartner(models.Model):
                         % partner.name
                     )
 
-    @api.onchange("country_id")
-    def onchange_country_id_e_inv(self):
-        if self.country_id.code == "IT":
-            self.codice_destinatario = STANDARD_ADDRESSEE_CODE
-        else:
-            self.codice_destinatario = "XXXXXXX"
+    @api.depends(
+        "country_id",
+        "parent_id",
+        "is_company",
+        "electronic_invoice_use_this_address",
+        "parent_id.l10n_it_use_codice_destinatario_for_children",
+        "parent_id.codice_destinatario",
+    )
+    def _compute_codice_destinatario(self):
+        for partner in self:
+            codice_destinatario = None
+            if (
+                not partner.is_company
+                and not partner.electronic_invoice_use_this_address
+                and not partner.l10n_it_use_codice_destinatario_for_children
+            ):
+                codice_destinatario = self._recursive_parent_codice_destinatario(
+                    partner.parent_id
+                )
+
+            if codice_destinatario is None:
+                if partner.country_id.code == "IT":
+                    codice_destinatario = STANDARD_ADDRESSEE_CODE
+                else:
+                    codice_destinatario = "XXXXXXX"
+
+            partner.codice_destinatario = codice_destinatario
+
+    def _inverse_codice_destinatario(self):
+        """
+        Inverse method to propagate changes in codice_destinatario to child records.
+        """
+        for record in self:
+            # Find child records that inherit codice_destinatario from this parent
+            # Consider an alternative solution with no inverse method at all, and
+            # only a compute with the correct fields
+            # set in the depends
+            child_records = self.search(
+                [
+                    ("parent_id", "=", record.id),
+                    ("l10n_it_use_codice_destinatario_for_children", "=", False),
+                    ("is_company", "=", False),
+                    ("electronic_invoice_use_this_address", "!=", True),
+                ]
+            )
+            # Update the codice_destinatario of each child record to match the parent
+            for child in child_records:
+                child.codice_destinatario = record.codice_destinatario
+
+    @api.model
+    def _recursive_parent_codice_destinatario(self, parent):
+        """
+        Recursively finds the codice_destinatario from the first ancestor
+        that has set the flag l10n_it_use_codice_destinatario_for_children.
+        Returns None if no codice_destinatario is found.
+        """
+        if parent.l10n_it_use_codice_destinatario_for_children:
+            return parent.codice_destinatario
+        elif parent.parent_id:
+            return self._recursive_parent_codice_destinatario(parent.parent_id)
+        return None
 
     @api.onchange("electronic_invoice_subjected")
     def onchange_electronic_invoice_subjected(self):
@@ -181,12 +246,10 @@ class ResPartner(models.Model):
             self.electronic_invoice_obliged_subject = False
         else:
             if self.supplier_rank > 0:
-                self.onchange_country_id_e_inv()
                 self.electronic_invoice_obliged_subject = True
 
     @api.onchange("electronic_invoice_obliged_subject")
     def onchange_e_inv_obliged_subject(self):
         if not self.electronic_invoice_obliged_subject:
-            self.onchange_country_id_e_inv()
             self.pec_destinatario = ""
             self.eori_code = ""
