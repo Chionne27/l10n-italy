@@ -2,6 +2,7 @@
 #  Copyright 2024 Simone Rubino - Aion Tech
 #  License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
+import json
 import logging
 import re
 import warnings
@@ -196,61 +197,33 @@ class WizardImportFatturapa(models.TransientModel):
                 % (DatiAnagrafici.Anagrafica.Cognome, partner.lastname)
             )
 
-    def getPartnerBase(self, DatiAnagrafici):  # noqa: C901
+    def getPartnerBase(self, DatiAnagrafici, partnerCreate=True):
         if not DatiAnagrafici:
             return False
         partner_model = self.env["res.partner"]
-        cf = DatiAnagrafici.CodiceFiscale or False
-        vat = False
-        if DatiAnagrafici.IdFiscaleIVA:
-            id_paese = DatiAnagrafici.IdFiscaleIVA.IdPaese.upper()
-            id_codice = re.sub(r"\W+", "", DatiAnagrafici.IdFiscaleIVA.IdCodice).upper()
-            # Format Italian VAT ID to always have 11 char
-            # to avoid validation error when creating the given partner
-            if id_paese == "IT" and not id_codice.startswith("IT"):
-                vat = "IT{}".format(id_codice.rjust(11, "0")[:11])
-            # XXX maybe San Marino needs special formatting too?
-            else:
-                vat = id_codice
-        partners = partner_model
-        res_partner_rule = (
-            self.env["ir.model.data"]
-            .sudo()
-            .xmlid_to_object("base.res_partner_rule", raise_if_not_found=False)
-        )
-        if vat:
-            domain = [("vat", "=", vat)]
-            if (
-                self.env.context.get("from_attachment")
-                and res_partner_rule
-                and res_partner_rule.active
-            ):
-                att = self.env.context.get("from_attachment")
-                domain.extend(
-                    [
-                        "|",
-                        ("company_id", "child_of", att.company_id.id),
-                        ("company_id", "=", False),
-                    ]
-                )
-            partners = partner_model.search(domain)
-        if not partners and cf:
-            domain = [("fiscalcode", "=", cf)]
-            if (
-                self.env.context.get("from_attachment")
-                and res_partner_rule
-                and res_partner_rule.active
-            ):
-                att = self.env.context.get("from_attachment")
-                domain.extend(
-                    [
-                        "|",
-                        ("company_id", "child_of", att.company_id.id),
-                        ("company_id", "=", False),
-                    ]
-                )
-            partners = partner_model.search(domain)
+        cf, vat = self._define_vat_fiscalcode(DatiAnagrafici)
+
+        partners = self._find_partners_by_cf_vat(DatiAnagrafici)
+        commercial_partner_id = self._find_commercial_partner(DatiAnagrafici, partners)
+        if commercial_partner_id is None:
+            return False
+        if partners:
+            if not commercial_partner_id:
+                commercial_partner_id = partners[0].commercial_partner_id.id
+            self.check_partner_base_data(commercial_partner_id, DatiAnagrafici)
+            return commercial_partner_id
+        else:
+            # partner to be created
+            vals = self._prepare_partner_values(DatiAnagrafici, vat, cf)
+
+            if partnerCreate:
+                return partner_model.create(vals).id
+
+            return vals
+
+    def _find_commercial_partner(self, DatiAnagrafici, partners):
         commercial_partner_id = False
+        cf, vat = self._define_vat_fiscalcode(DatiAnagrafici)
         if len(partners) > 1:
             for partner in partners:
                 if (
@@ -264,43 +237,91 @@ class WizardImportFatturapa(models.TransientModel):
                             "present in db." % (vat, cf)
                         )
                     )
-                    return False
+                    return None
                 commercial_partner_id = partner.commercial_partner_id.id
-        if partners:
-            if not commercial_partner_id:
-                commercial_partner_id = partners[0].commercial_partner_id.id
-            self.check_partner_base_data(commercial_partner_id, DatiAnagrafici)
-            return commercial_partner_id
-        else:
-            # partner to be created
-            country_id = False
-            if DatiAnagrafici.IdFiscaleIVA:
-                CountryCode = DatiAnagrafici.IdFiscaleIVA.IdPaese
-                countries = self.CountryByCode(CountryCode)
-                if countries:
-                    country_id = countries[0].id
-                else:
-                    raise UserError(
-                        _("Country Code %s not found in system.") % CountryCode
-                    )
-            vals = {
-                "vat": vat,
-                "fiscalcode": cf,
-                "is_company": (
-                    DatiAnagrafici.Anagrafica.Denominazione and True or False
-                ),
-                "eori_code": DatiAnagrafici.Anagrafica.CodEORI or "",
-                "country_id": country_id,
-                "company_id": self.env.company.id,
-            }
-            if DatiAnagrafici.Anagrafica.Nome:
-                vals["firstname"] = DatiAnagrafici.Anagrafica.Nome
-            if DatiAnagrafici.Anagrafica.Cognome:
-                vals["lastname"] = DatiAnagrafici.Anagrafica.Cognome
-            if DatiAnagrafici.Anagrafica.Denominazione:
-                vals["name"] = DatiAnagrafici.Anagrafica.Denominazione
+        return commercial_partner_id
 
-            return partner_model.create(vals).id
+    def _find_partners_by_cf_vat(self, DatiAnagrafici):
+        partner_model = self.env["res.partner"]
+        cf, vat = self._define_vat_fiscalcode(DatiAnagrafici)
+
+        partners = partner_model
+        if vat:
+            domain = [("vat", "=", vat)]
+            domain = self._add_company_domain_from_attachment(domain)
+            partners = partner_model.search(domain)
+        if not partners and cf:
+            domain = [("fiscalcode", "=", cf)]
+            domain = self._add_company_domain_from_attachment(domain)
+            partners = partner_model.search(domain)
+        return partners
+
+    def _add_company_domain_from_attachment(self, domain):
+        """
+        Extends domain with company_id filter depending on
+        attachment in context
+        """
+        res_partner_rule = (
+            self.env["ir.model.data"]
+            .sudo()
+            .xmlid_to_object("base.res_partner_rule", raise_if_not_found=False)
+        )
+        if (
+            self.env.context.get("from_attachment")
+            and res_partner_rule
+            and res_partner_rule.active
+        ):
+            att = self.env.context.get("from_attachment")
+            domain.extend(
+                [
+                    "|",
+                    ("company_id", "child_of", att.company_id.id),
+                    ("company_id", "=", False),
+                ]
+            )
+        return domain
+
+    def _define_vat_fiscalcode(self, DatiAnagrafici):
+        cf = DatiAnagrafici.CodiceFiscale or False
+        vat = False
+        if DatiAnagrafici.IdFiscaleIVA:
+            id_paese = DatiAnagrafici.IdFiscaleIVA.IdPaese.upper()
+            id_codice = re.sub(r"\W+", "", DatiAnagrafici.IdFiscaleIVA.IdCodice).upper()
+            # Format Italian VAT ID to always have 11 char
+            # to avoid validation error when creating the given partner
+            if id_paese == "IT" and not id_codice.startswith("IT"):
+                vat = "IT{}".format(id_codice.rjust(11, "0")[:11])
+            # XXX maybe San Marino needs special formatting too?
+            else:
+                vat = id_codice
+        return cf, vat
+
+    def _prepare_partner_values(self, DatiAnagrafici, vat=False, cf=False):
+        # define partner vals
+        country_id = False
+        if DatiAnagrafici.IdFiscaleIVA:
+            CountryCode = DatiAnagrafici.IdFiscaleIVA.IdPaese
+            countries = self.CountryByCode(CountryCode)
+            if countries:
+                country_id = countries[0].id
+            else:
+                raise UserError(_("Country Code %s not found in system.") % CountryCode)
+        vals = {
+            "vat": vat if vat else False,
+            "fiscalcode": cf if cf else False,
+            "is_company": (DatiAnagrafici.Anagrafica.Denominazione and True or False),
+            "eori_code": DatiAnagrafici.Anagrafica.CodEORI or "",
+            "country_id": country_id,
+            "company_id": self.env.company.id,
+        }
+        if DatiAnagrafici.Anagrafica.Nome:
+            vals["firstname"] = DatiAnagrafici.Anagrafica.Nome
+        if DatiAnagrafici.Anagrafica.Cognome:
+            vals["lastname"] = DatiAnagrafici.Anagrafica.Cognome
+        if DatiAnagrafici.Anagrafica.Denominazione:
+            vals["name"] = DatiAnagrafici.Anagrafica.Denominazione
+
+        return vals
 
     def get_partner_from_einvoice_node(self, partner_node):
         """
@@ -1808,37 +1829,9 @@ class WizardImportFatturapa(models.TransientModel):
         partner_id = self.get_partner_from_einvoice_node(cedentePrestatore)
         return partner_id
 
-    def importFatturaPA(self):
-        self.ensure_one()
-        fatturapa_attachments = self._get_selected_records()
-
-        (
-            price_precision,
-            different_price_precisions,
-            original_price_precision,
-        ) = self._set_decimal_precision(
-            "Product Price", "price_decimal_digits", attachments=fatturapa_attachments
-        )
-        (
-            qty_precision,
-            different_qty_precisions,
-            original_qty_precision,
-        ) = self._set_decimal_precision(
-            "Product Unit of Measure",
-            "quantity_decimal_digits",
-            attachments=fatturapa_attachments,
-        )
-        (
-            discount_precision,
-            different_discount_precisions,
-            original_discount_precision,
-        ) = self._set_decimal_precision(
-            "Discount", "discount_decimal_digits", attachments=fatturapa_attachments
-        )
-
+    def _process_fatturapa_attachment(self, fatturapa_attachments):
         new_invoices = []
-        # convert to dict in order to be able to modify context
-        self.env.context = dict(self.env.context)
+        new_intermediary_data = []
         for fatturapa_attachment in fatturapa_attachments:
             self.reset_inconsistencies()
             self._check_attachment(fatturapa_attachment)
@@ -1888,8 +1881,52 @@ class WizardImportFatturapa(models.TransientModel):
                     )
                     invoice.write({"tax_representative_id": tax_partner_id})
                 if Intermediary:
-                    Intermediary_id = self.getPartnerBase(Intermediary.DatiAnagrafici)
-                    invoice.write({"intermediary": Intermediary_id})
+                    vat = False
+                    nome = Intermediary.DatiAnagrafici.Anagrafica.Nome or ""
+                    cognome = Intermediary.DatiAnagrafici.Anagrafica.Cognome or ""
+                    denominazione = (
+                        Intermediary.DatiAnagrafici.Anagrafica.Denominazione or ""
+                    )
+
+                    if Intermediary.DatiAnagrafici.IdFiscaleIVA:
+                        partner = self.getPartnerBase(
+                            Intermediary.DatiAnagrafici, partnerCreate=False
+                        )
+
+                        if isinstance(partner, int):
+                            partner_id = self.env["res.partner"].browse(partner)
+                            invoice.write({"intermediary": partner_id})
+                        elif isinstance(partner, dict):
+                            partner_vals = partner
+                            new_intermediary_data.append(
+                                {
+                                    "name": partner_vals.get("name"),
+                                    "firstname": partner_vals.get("firstname"),
+                                    "lastname": partner_vals.get("lastname"),
+                                    "vat": partner_vals["vat"],
+                                    "invoice_id": invoice.id,
+                                    "intermediary_data_json": json.dumps(partner_vals),
+                                }
+                            )
+                        elif isinstance(partner, bool):
+                            invoice.write({"intermediary": False})
+                    else:
+                        new_intermediary_data.append(
+                            {
+                                "name": denominazione,
+                                "firstname": nome,
+                                "lastname": cognome,
+                                "vat": vat,
+                                "invoice_id": invoice.id,
+                                "intermediary_data_json": {
+                                    "name": denominazione,
+                                    "firstname": nome,
+                                    "lastname": cognome,
+                                    "vat": vat,
+                                },
+                            }
+                        )
+
                 new_invoices.append(invoice.id)
                 self.check_invoice_amount(invoice, fattura)
 
@@ -1904,6 +1941,43 @@ class WizardImportFatturapa(models.TransientModel):
                     generic_inconsistencies + invoice_inconsistencies
                 )
 
+        return new_invoices, new_intermediary_data
+
+    def importFatturaPA(self):
+        self.ensure_one()
+        fatturapa_attachments = self._get_selected_records()
+
+        (
+            price_precision,
+            different_price_precisions,
+            original_price_precision,
+        ) = self._set_decimal_precision(
+            "Product Price", "price_decimal_digits", attachments=fatturapa_attachments
+        )
+        (
+            qty_precision,
+            different_qty_precisions,
+            original_qty_precision,
+        ) = self._set_decimal_precision(
+            "Product Unit of Measure",
+            "quantity_decimal_digits",
+            attachments=fatturapa_attachments,
+        )
+        (
+            discount_precision,
+            different_discount_precisions,
+            original_discount_precision,
+        ) = self._set_decimal_precision(
+            "Discount", "discount_decimal_digits", attachments=fatturapa_attachments
+        )
+
+        # convert to dict in order to be able to modify context
+        self.env.context = dict(self.env.context)
+
+        new_invoices, new_intermediary_data = self._process_fatturapa_attachment(
+            fatturapa_attachments
+        )
+
         if price_precision and different_price_precisions:
             self._restore_original_precision(price_precision, original_price_precision)
         if qty_precision and different_qty_precisions:
@@ -1912,6 +1986,39 @@ class WizardImportFatturapa(models.TransientModel):
             self._restore_original_precision(
                 discount_precision, original_discount_precision
             )
+
+        if new_intermediary_data:
+            res = self.env["wizard.check.intermediary"].create(
+                {
+                    "line_ids": [
+                        (
+                            0,
+                            0,
+                            {
+                                "firstname": new_data.get("firstname") or "",
+                                "lastname": new_data.get("lastname")
+                                or new_data.get("name"),
+                                "vat": new_data["vat"],
+                                "invoice_id": new_data["invoice_id"],
+                                "intermediary_data_json": json.dumps(
+                                    new_data["intermediary_data_json"]
+                                ),
+                            },
+                        )
+                        for new_data in new_intermediary_data
+                    ],
+                    "invoice_ids": [(6, 0, new_invoices)],
+                }
+            )
+
+            return {
+                "type": "ir.actions.act_window",
+                "name": "Confirm action",
+                "res_model": "wizard.check.intermediary",
+                "res_id": res.id,
+                "view_mode": "form",
+                "target": "new",
+            }
 
         return {
             "view_type": "form",
