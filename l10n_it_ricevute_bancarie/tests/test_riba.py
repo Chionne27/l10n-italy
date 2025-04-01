@@ -715,3 +715,62 @@ class TestInvoiceDueCost(riba_common.TestRibaCommon):
         self.assertIn("Cannot post invoices", err_msg)
         self.assertIn(self.invoice.partner_id.display_name, err_msg)
         self.assertIn(str(self.invoice.amount_total), err_msg)
+
+    def test_duplicate_riba_emission_not_prevented(self):
+        """Test that the prevention of duplicate RiBa
+        emissions for the same invoice is NOT enforced."""
+        # Set Service in Company Config
+        self.invoice.company_id.due_cost_service_id = self.service_due_cost.id
+        # Validate Invoice
+        self.invoice.action_post()
+        self.assertEqual(self.invoice.state, "posted")
+
+        # Find the receivable line for the invoice
+        # We will use thi first move line for the first RiBa
+        # and the second move line for the second RiBa
+        riba_move_lines = self.invoice.line_ids.filtered(
+            lambda x: x.account_id == self.account_rec1_id
+        )
+        self.assertTrue(riba_move_lines)
+
+        # Create first RiBa Emission
+        wizard_riba_issue = self.env["riba.issue"].create(
+            {"configuration_id": self.riba_config_sbf_maturation.id}
+        )
+
+        action = wizard_riba_issue.with_context(
+            {"active_ids": [riba_move_lines[0].id]}
+        ).create_list()
+        riba_list_id = action and action["res_id"] or False
+        riba_list = self.distinta_model.browse(riba_list_id)
+        riba_list.confirm()
+        self.assertEqual(riba_list.state, "accepted")
+
+        # Create a second RiBa emission
+        wizard_riba_issue_2 = self.env["riba.issue"].create(
+            {"configuration_id": self.riba_config_sbf_maturation.id}
+        )
+
+        action_2 = wizard_riba_issue_2.with_context(
+            {"active_ids": [riba_move_lines[1].id]}
+        ).create_list()
+        riba_list_id_2 = action_2 and action_2["res_id"] or False
+        riba_list_2 = self.distinta_model.browse(riba_list_id_2)
+        riba_list_2.confirm()
+        self.assertEqual(riba_list_2.state, "accepted")
+
+        # Assert that a second RiBa list was created for the same invoice line
+        self.assertTrue(riba_list_id)
+        self.assertTrue(riba_list_id_2)
+        self.assertNotEqual(
+            riba_list_id,
+            riba_list_id_2,
+            "Two different RiBa lists should have been created.",
+        )
+
+        # Check if the original invoice line is now linked to two RiBa lists
+        self.assertEqual(
+            len(riba_move_lines.distinta_line_ids),
+            2,
+            "The invoice line should be linked to two RiBa lists.",
+        )

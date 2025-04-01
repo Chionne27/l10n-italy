@@ -403,15 +403,32 @@ class AccountMoveLine(models.Model):
         return res
 
     def action_riba_issue(self):
+        reconciled_riba_invoices = (
+            []
+        )  # list of invoices where a riba is emitted and reconciled
         for line in self:
             if not line.move_id.riba_partner_bank_id.active:
                 raise UserError(
                     _(
-                        "Non è possibile emettere una riba legata ad un IBAN archiviato;"
-                        " riga: %s , contatto: %s"
+                        "It is not possible to issue a RiBa linked to an archived IBAN."
+                        "\nVerify and use an active IBAN for the customer;"
+                        " line: %(line_name)s, contact: %(partner_name)s",
+                        line_name=line.name,
+                        partner_name=line.partner_id.name,
                     )
-                    % (line.name, line.partner_id.name)
                 )
+            if line.distinta_line_ids.riba_line_id.state == "accredited":
+                reconciled_riba_invoices.append(line.name)
+
+        if reconciled_riba_invoices:
+            raise UserError(
+                _(
+                    "Cannot issue a new RiBa on the following invoices:\n%(invoices)s"
+                    "\nThey already exist.",
+                    invoices="\n".join(reconciled_riba_invoices),
+                )
+            )
+
         ctx = dict(self.env.context)
         ctx.pop("active_id", None)
         ctx["active_ids"] = self.ids
