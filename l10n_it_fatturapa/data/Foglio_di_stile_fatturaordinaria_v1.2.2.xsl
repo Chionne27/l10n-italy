@@ -3189,7 +3189,7 @@
 																		</span>
 																	</li>
 																</xsl:if>
-																<xsl:if test="IBAN">
+																<xsl:if test="IBAN and $MP != 'MP12'">
 																	<li>
 																		Codice IBAN:
 																		<span>
