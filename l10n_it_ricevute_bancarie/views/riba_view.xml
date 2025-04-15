@@ -294,8 +294,12 @@
     <!-- ====================================================== -->
     <!--                     RIBA SLIP LINE ACTION              -->
     <!-- ====================================================== -->
-    <record id="riba_line_settle_action_server" model="ir.actions.server">
-        <field name="name">Settle RiBa Line</field>
+
+    <record
+        id="action_wizard_riba_due_date_settlement_riba_view"
+        model="ir.actions.server"
+    >
+        <field name="name">Settle RiBa lines by due date</field>
         <field
             name="model_id"
             ref="l10n_it_ricevute_bancarie.model_riba_distinta_line"
@@ -305,7 +309,7 @@
             ref="l10n_it_ricevute_bancarie.model_riba_distinta_line"
         />
         <field name="state">code</field>
-        <field name="code">action = records.settle_riba_line()</field>
+        <field name="code">action = records.action_riba_due_date_settlement()</field>
     </record>
 
     <!-- ====================================================== -->

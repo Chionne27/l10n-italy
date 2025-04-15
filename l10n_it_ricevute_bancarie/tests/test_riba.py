@@ -746,3 +746,29 @@ class TestInvoiceDueCost(riba_common.TestRibaCommon):
             .create({})
         )
         self.assertEqual(wizard.past_due_fee_amount, 15.0)
+
+    def test_riba_due_date_settlement(self):
+        invoice, riba_list = self.riba_sbf_common(self.riba_config_sbf_maturation.id)
+
+        # check if riba distinta line is accredited before settlement procedure
+        self.assertEqual(riba_list.line_ids.state, "accredited")
+
+        # Journal is important to register riba payment
+        riba_list.config_id.settlement_journal_id = self.bank_journal.id
+
+        # open wizard due date settlement
+        wizard_riba_settlement = self.env["riba.due.date.settlement"].create(
+            {"due_date": riba_list.line_ids.due_date}
+        )
+
+        self.assertEqual(wizard_riba_settlement.due_date, riba_list.line_ids.due_date)
+
+        wizard_riba_settlement.with_context(
+            {
+                "active_ids": riba_list.line_ids.ids,
+                "active_model": "riba.distinta.line",
+            }
+        ).due_date_settlement_confirm()
+
+        # check if riba line has paid status
+        self.assertEqual(riba_list.line_ids.state, "paid")

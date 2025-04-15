@@ -539,10 +539,15 @@ class RibaListLine(models.Model):
 
             to_be_settled.reconcile()
 
-    def settle_riba_line(self):
-        for line in self:
-            if line.state == "credited":
-                line.riba_line_settlement()
+    def action_riba_due_date_settlement(self):
+        return {
+            "type": "ir.actions.act_window",
+            "name": "C/O Due Date Settlement",
+            "res_model": "riba.due.date.settlement",
+            "view_mode": "form",
+            "target": "new",
+            "context": self.env.context,
+        }
 
 
 class RibaListMoveLine(models.Model):
