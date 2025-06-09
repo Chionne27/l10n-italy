@@ -194,9 +194,10 @@ class ResPartner(models.Model):
                 and not partner.electronic_invoice_use_this_address
                 and not partner.l10n_it_use_codice_destinatario_for_children
             ):
-                codice_destinatario = self._recursive_parent_codice_destinatario(
-                    partner.parent_id
-                )
+                commercial_cd = partner.commercial_partner_id.codice_destinatario
+                if commercial_cd and commercial_cd != STANDARD_ADDRESSEE_CODE:
+                    partner.codice_destinatario = commercial_cd
+                    continue
 
             if codice_destinatario is None:
                 if partner.country_id.code == "IT":
@@ -226,19 +227,6 @@ class ResPartner(models.Model):
             # Update the codice_destinatario of each child record to match the parent
             for child in child_records:
                 child.codice_destinatario = record.codice_destinatario
-
-    @api.model
-    def _recursive_parent_codice_destinatario(self, parent):
-        """
-        Recursively finds the codice_destinatario from the first ancestor
-        that has set the flag l10n_it_use_codice_destinatario_for_children.
-        Returns None if no codice_destinatario is found.
-        """
-        if parent.l10n_it_use_codice_destinatario_for_children:
-            return parent.codice_destinatario
-        elif parent.parent_id:
-            return self._recursive_parent_codice_destinatario(parent.parent_id)
-        return None
 
     @api.onchange("electronic_invoice_subjected")
     def onchange_electronic_invoice_subjected(self):
