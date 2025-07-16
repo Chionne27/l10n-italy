@@ -78,9 +78,10 @@ class TestImportZIP(FatturapaCommon):
                     "partner_id": self.env["res.partner"].search(
                         [
                             ("name", "=", "Foreign Customer"),
+                            ("city", "=", "Dubai"),
                         ],
                         limit=1,
-                    ),
+                    )
                 }
             ],
         }
