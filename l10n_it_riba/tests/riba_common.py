@@ -187,15 +187,12 @@ class TestRibaCommon(common.TransactionCase):
     def _create_invoice(self):
         # ----- Set invoice date to recent date in the system
         # ----- This solves problems with account_invoice_sequential_dates
+        invoice_date = fields.Date.today()
         self.partner.property_account_receivable_id = self.account_rec1_id.id
-        recent_date = (
-            self.env["account.move"]
-            .search([("invoice_date", "!=", False)], order="invoice_date desc", limit=1)
-            .invoice_date
-        )
         return self.env["account.move"].create(
             {
-                "invoice_date": recent_date or fields.Date.today(),
+                "date": invoice_date,
+                "invoice_date": invoice_date,
                 "move_type": "out_invoice",
                 "journal_id": self.sale_journal.id,
                 "partner_id": self.partner.id,
@@ -219,15 +216,12 @@ class TestRibaCommon(common.TransactionCase):
         )
 
     def _create_sbf_invoice(self):
+        invoice_date = fields.Date.today()
         self.partner.property_account_receivable_id = self.account_rec1_id.id
-        recent_date = (
-            self.env["account.move"]
-            .search([("invoice_date", "!=", False)], order="invoice_date desc", limit=1)
-            .invoice_date
-        )
         return self.env["account.move"].create(
             {
-                "invoice_date": recent_date,
+                "date": invoice_date,
+                "invoice_date": invoice_date,
                 "move_type": "out_invoice",
                 "journal_id": self.sale_journal.id,
                 "partner_id": self.partner.id,
