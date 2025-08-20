@@ -174,6 +174,33 @@ class TestFatturaPAXMLValidation(FatturapaCommon):
         self.assertEqual(invoice.amount_tax, 0)
         self.assertEqual(invoice.amount_total, 9)
 
+    def test_xml_import_with_action_cancel(self):
+        partner_record = self.env["res.partner"].search([("name", "=", "MARIO ROSSI")])
+
+        if partner_record:
+            partner_record.unlink()
+
+        res = self.run_wizard(
+            "test5.2",
+            "IT05979361218_003.xml",
+            wizard_check_action="action_cancel",
+        )
+        invoice_id = res.get("domain")[0][2][0]
+        invoice = self.invoice_model.browse(invoice_id)
+        self.assertEqual(invoice.ref, "FT/2015/0008")
+        self.assertEqual(invoice.payment_reference, "FT/2015/0008")
+        self.assertEqual(invoice.sender, "TZ")
+        self.assertFalse(invoice.intermediary)
+        self.assertEqual(
+            invoice.e_invoice_line_ids[0].discount_rise_price_ids[0].name, "SC"
+        )
+        self.assertEqual(
+            invoice.e_invoice_line_ids[0].discount_rise_price_ids[0].percentage, 10
+        )
+        self.assertEqual(invoice.amount_untaxed, 9)
+        self.assertEqual(invoice.amount_tax, 0)
+        self.assertEqual(invoice.amount_total, 9)
+
     def test_06_import_except(self):
         # File not exist Exception
         self.assertRaises(Exception, self.run_wizard, "test6_Exception", "")

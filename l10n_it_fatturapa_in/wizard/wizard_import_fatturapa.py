@@ -2,6 +2,7 @@
 #  Copyright 2024 Simone Rubino - Aion Tech
 #  License AGPL-3.0 or later (https://www.gnu.org/licenses/agpl).
 
+import json
 import logging
 import re
 import warnings
@@ -203,7 +204,9 @@ class WizardImportFatturapa(models.TransientModel):
         cf, vat = self._define_vat_fiscalcode(DatiAnagrafici)
 
         partners = self._find_partners_by_cf_vat(DatiAnagrafici)
-        commercial_partner_id = self._find_commercial_partner(DatiAnagrafici, partners)
+        commercial_partner_id = self._find_commercial_partner(
+            DatiAnagrafici, partners, cf, vat
+        )
         if commercial_partner_id is None:
             return False
         if partners:
@@ -220,9 +223,8 @@ class WizardImportFatturapa(models.TransientModel):
 
             return vals
 
-    def _find_commercial_partner(self, DatiAnagrafici, partners):
+    def _find_commercial_partner(self, DatiAnagrafici, partners, cf, vat):
         commercial_partner_id = False
-        cf, vat = self._define_vat_fiscalcode(DatiAnagrafici)
         if len(partners) > 1:
             for partner in partners:
                 if (
@@ -238,6 +240,8 @@ class WizardImportFatturapa(models.TransientModel):
                     )
                     return None
                 commercial_partner_id = partner.commercial_partner_id.id
+        elif len(partners) == 1:
+            commercial_partner_id = partners[0].commercial_partner_id.id
         return commercial_partner_id
 
     def _find_partners_by_cf_vat(self, DatiAnagrafici):
@@ -306,8 +310,8 @@ class WizardImportFatturapa(models.TransientModel):
             else:
                 raise UserError(_("Country Code %s not found in system.") % CountryCode)
         vals = {
-            "vat": vat if vat else False,
-            "fiscalcode": cf if cf else False,
+            "vat": vat,
+            "fiscalcode": cf,
             "is_company": (DatiAnagrafici.Anagrafica.Denominazione and True or False),
             "eori_code": DatiAnagrafici.Anagrafica.CodEORI or "",
             "country_id": country_id,
@@ -1830,6 +1834,7 @@ class WizardImportFatturapa(models.TransientModel):
 
     def _process_fatturapa_attachment(self, fatturapa_attachments):
         new_invoices = []
+        new_intermediary_data = []
         for fatturapa_attachment in fatturapa_attachments:
             self.reset_inconsistencies()
             self._check_attachment(fatturapa_attachment)
@@ -1879,8 +1884,40 @@ class WizardImportFatturapa(models.TransientModel):
                     )
                     invoice.write({"tax_representative_id": tax_partner_id})
                 if Intermediary:
-                    Intermediary_id = self.getPartnerBase(Intermediary.DatiAnagrafici)
-                    invoice.write({"intermediary": Intermediary_id})
+                    # vat = False
+                    # nome = Intermediary.DatiAnagrafici.Anagrafica.Nome or ""
+                    # cognome = Intermediary.DatiAnagrafici.Anagrafica.Cognome or ""
+                    # denominazione = (
+                    #     Intermediary.DatiAnagrafici.Anagrafica.Denominazione or ""
+                    # )
+
+                    partner_id = self.getPartnerBase(
+                        Intermediary.DatiAnagrafici, partnerCreate=False
+                    )
+
+                    if isinstance(partner_id, int):
+                        invoice.write({"intermediary": partner_id})
+                    elif isinstance(partner_id, dict):
+                        partner_vals = partner_id
+                        new_intermediary_data.append(
+                            {
+                                "invoice_id": invoice.id,
+                                "intermediary_data_json": json.dumps(partner_vals),
+                            }
+                        )
+                    # else:
+                    #     new_intermediary_data.append(
+                    #         {
+                    #             "invoice_id": invoice.id,
+                    #             "intermediary_data_json": {
+                    #                 "name": denominazione,
+                    #                 "firstname": nome,
+                    #                 "lastname": cognome,
+                    #                 "vat": vat,
+                    #             },
+                    #         }
+                    #     )
+
                 new_invoices.append(invoice.id)
                 self.check_invoice_amount(invoice, fattura)
 
@@ -1895,7 +1932,7 @@ class WizardImportFatturapa(models.TransientModel):
                     generic_inconsistencies + invoice_inconsistencies
                 )
 
-        return new_invoices
+        return new_invoices, new_intermediary_data
 
     def importFatturaPA(self):
         self.ensure_one()
@@ -1925,9 +1962,12 @@ class WizardImportFatturapa(models.TransientModel):
             "Discount", "discount_decimal_digits", attachments=fatturapa_attachments
         )
 
+        # convert to dict in order to be able to modify context
         self.env.context = dict(self.env.context)
 
-        new_invoices = self._process_fatturapa_attachment(fatturapa_attachments)
+        new_invoices, new_intermediary_data = self._process_fatturapa_attachment(
+            fatturapa_attachments
+        )
 
         if price_precision and different_price_precisions:
             self._restore_original_precision(price_precision, original_price_precision)
@@ -1937,6 +1977,40 @@ class WizardImportFatturapa(models.TransientModel):
             self._restore_original_precision(
                 discount_precision, original_discount_precision
             )
+
+        if new_intermediary_data:
+            res = self.env["wizard.check.intermediary"].create(
+                {
+                    "line_ids": [
+                        (
+                            0,
+                            0,
+                            {
+                                "name": new_data.get("name") or "",
+                                "firstname": new_data.get("firstname") or "",
+                                "lastname": new_data.get("lastname")
+                                or new_data.get("name"),
+                                "vat": new_data.get("vat"),
+                                "invoice_id": new_data.get("invoice_id"),
+                                "intermediary_data_json": new_data.get(
+                                    "intermediary_data_json", {}
+                                ),
+                            },
+                        )
+                        for new_data in new_intermediary_data
+                    ],
+                    "invoice_ids": [(6, 0, new_invoices)],
+                }
+            )
+
+            return {
+                "type": "ir.actions.act_window",
+                "name": "Confirm action",
+                "res_model": "wizard.check.intermediary",
+                "res_id": res.id,
+                "view_mode": "form",
+                "target": "new",
+            }
 
         return {
             "view_type": "form",
