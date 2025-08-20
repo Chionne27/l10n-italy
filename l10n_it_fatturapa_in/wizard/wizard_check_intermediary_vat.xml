@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<odoo>
+    <record id="view_check_intermediary_vat" model="ir.ui.view">
+        <field name="name">check.intermediary.vat.form</field>
+        <field name="model">wizard.check.intermediary</field>
+        <field name="arch" type="xml">
+            <form string="Verify Intermediary">
+                <sheet>
+                    <group>
+                        <group>
+                            <p
+                            >These intermediaries do not exist on the system. Do you want to create them?</p>
+                        </group>
+                        <field name="line_ids" nolabel="1">
+                            <tree create="0">
+                                <field name="firstname" />
+                                <field name="lastname" />
+                                <field name="vat" />
+                                <field name="invoice_id" />
+                                <field name="intermediary_data_json" invisible="1" />
+                            </tree>
+                        </field>
+                    </group>
+                    <footer>
+                        <button
+                            string="Confirm"
+                            type="object"
+                            name="action_confirm"
+                            class="btn-primary"
+                        />
+                        <button
+                            string="No"
+                            type="object"
+                            name="action_cancel"
+                            class="btn-secondary"
+                        />
+                    </footer>
+                </sheet>
+            </form>
+        </field>
+    </record>
+</odoo>

@@ -277,7 +277,13 @@ class FatturapaCommon(SingleTransactionCase):
         return attach
 
     def run_wizard(
-        self, name, file_name, mode="import", wiz_values=None, module_name=None
+        self,
+        name,
+        file_name,
+        mode="import",
+        wiz_values=None,
+        module_name=None,
+        wizard_check_action="action_confirm",
     ):
         if module_name is None:
             module_name = "l10n_it_fatturapa_in"
@@ -294,7 +300,22 @@ class FatturapaCommon(SingleTransactionCase):
             for wiz_field, wiz_value in wiz_values.items():
                 setattr(wizard_form, wiz_field, wiz_value)
             wizard = wizard_form.save()
-            return wizard.importFatturaPA()
+            res = wizard.importFatturaPA()
+
+            # NEW WIZARD INTERMEDIARY CREATION BASED ON VAT CHECK
+            # Case where the confirmation wizard is shown
+            if res.get("res_model") == "wizard.check.intermediary":
+
+                wizard = self.env["wizard.check.intermediary"].browse(res["res_id"])
+
+                if wizard_check_action == "action_confirm":
+                    res = wizard.action_confirm()
+                else:
+                    res = wizard.action_cancel()
+                return res
+            else:
+                return res
+
         if mode == "link":
             wizard_form = Form(
                 self.wizard_link_model.with_context(
